@@ -1,4 +1,4 @@
-package com.sem4.assignments.problem1;
+package com.sem4.assignments.week1;
 
 import java.util.ArrayList;
 import java.util.HashMap;

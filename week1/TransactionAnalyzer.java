@@ -1,4 +1,4 @@
-package com.sem4.assignments.problem9;
+package com.sem4.assignments.week1;
 
 import java.time.Duration;
 import java.time.Instant;
