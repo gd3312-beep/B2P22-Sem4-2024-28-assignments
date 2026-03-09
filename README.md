@@ -20,7 +20,4 @@ This project contains Java implementations for all 10 hash-table-based assignmen
 ```bash
 cd B2P22-Sem4-2024-28-assignments
 mvn compile
-mvn exec:java -Dexec.mainClass=com.sem4.assignments.AssignmentRunner
 ```
-
-Or run `AssignmentRunner` directly from IntelliJ.
