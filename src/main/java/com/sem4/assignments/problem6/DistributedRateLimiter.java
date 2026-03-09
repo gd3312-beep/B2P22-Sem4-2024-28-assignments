@@ -1,98 +1,132 @@
 package com.sem4.assignments.problem6;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.HashMap;
+import java.util.Map;
 
 public class DistributedRateLimiter {
-    private static final long ONE_HOUR_MILLIS = 60L * 60L * 1000L;
+    private static final long ONE_HOUR_MS = 60L * 60L * 1000L;
 
-    private final ConcurrentMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final int limitPerHour;
+    private final Map<String, TokenBucket> buckets = new HashMap<>();
 
     public DistributedRateLimiter(int limitPerHour) {
         if (limitPerHour <= 0) {
-            throw new IllegalArgumentException("limitPerHour must be positive");
+            limitPerHour = 1;
         }
         this.limitPerHour = limitPerHour;
     }
 
-    public RateLimitResult checkRateLimit(String clientId) {
-        String normalizedClientId = normalize(clientId);
-        TokenBucket tokenBucket = buckets.computeIfAbsent(normalizedClientId,
-                key -> new TokenBucket(limitPerHour, ONE_HOUR_MILLIS));
-        return tokenBucket.consumeOneToken();
+    public synchronized RateLimitResult checkRateLimit(String clientId) {
+        String key = normalize(clientId);
+        TokenBucket bucket = buckets.get(key);
+        if (bucket == null) {
+            bucket = new TokenBucket(limitPerHour);
+            buckets.put(key, bucket);
+        }
+        return bucket.consumeOneToken();
     }
 
-    public RateLimitStatus getRateLimitStatus(String clientId) {
-        String normalizedClientId = normalize(clientId);
-        TokenBucket tokenBucket = buckets.computeIfAbsent(normalizedClientId,
-                key -> new TokenBucket(limitPerHour, ONE_HOUR_MILLIS));
-        return tokenBucket.snapshot();
+    public synchronized RateLimitStatus getRateLimitStatus(String clientId) {
+        String key = normalize(clientId);
+        TokenBucket bucket = buckets.get(key);
+        if (bucket == null) {
+            bucket = new TokenBucket(limitPerHour);
+            buckets.put(key, bucket);
+        }
+        return bucket.getStatus();
     }
 
     private String normalize(String clientId) {
-        return clientId == null ? "" : clientId.trim();
+        if (clientId == null) {
+            return "";
+        }
+        return clientId.trim();
     }
 
-    private static final class TokenBucket {
-        private final double maxTokens;
-        private final double refillTokensPerMilli;
+    private static class TokenBucket {
+        private final int maxTokens;
+        private final double refillRatePerMs;
 
-        private double availableTokens;
-        private long lastRefillEpochMillis;
+        private double currentTokens;
+        private long lastRefillMs;
 
-        private TokenBucket(int maxTokens, long refillIntervalMillis) {
+        TokenBucket(int maxTokens) {
             this.maxTokens = maxTokens;
-            this.refillTokensPerMilli = maxTokens / (double) refillIntervalMillis;
-            this.availableTokens = maxTokens;
-            this.lastRefillEpochMillis = System.currentTimeMillis();
+            this.currentTokens = maxTokens;
+            this.lastRefillMs = System.currentTimeMillis();
+            this.refillRatePerMs = maxTokens / (double) ONE_HOUR_MS;
         }
 
-        private synchronized RateLimitResult consumeOneToken() {
-            long now = System.currentTimeMillis();
-            refill(now);
-
-            if (availableTokens >= 1.0) {
-                availableTokens -= 1.0;
-                return new RateLimitResult(true, (int) Math.floor(availableTokens), 0,
-                        "Allowed");
+        RateLimitResult consumeOneToken() {
+            refill();
+            if (currentTokens >= 1.0) {
+                currentTokens -= 1.0;
+                int remaining = (int) Math.floor(currentTokens);
+                return new RateLimitResult(true, remaining, 0, "Allowed");
             }
 
-            long retryAfterSeconds = (long) Math.ceil((1.0 - availableTokens) / refillTokensPerMilli / 1000.0);
-            return new RateLimitResult(false, 0, Math.max(retryAfterSeconds, 1),
-                    "Rate limit exceeded. Try again later.");
-        }
-
-        private synchronized RateLimitStatus snapshot() {
-            long now = System.currentTimeMillis();
-            refill(now);
-            int used = (int) (maxTokens - Math.floor(availableTokens));
-            long estimatedResetEpoch = now + (long) ((maxTokens - availableTokens) / refillTokensPerMilli);
-            return new RateLimitStatus(used, (int) maxTokens, estimatedResetEpoch / 1000L);
-        }
-
-        private void refill(long nowEpochMillis) {
-            if (nowEpochMillis <= lastRefillEpochMillis) {
-                return;
+            double needed = 1.0 - currentTokens;
+            long retrySeconds = (long) Math.ceil((needed / refillRatePerMs) / 1000.0);
+            if (retrySeconds < 1) {
+                retrySeconds = 1;
             }
+            return new RateLimitResult(false, 0, retrySeconds, "Rate limit exceeded");
+        }
 
-            long elapsedMillis = nowEpochMillis - lastRefillEpochMillis;
-            double refillAmount = elapsedMillis * refillTokensPerMilli;
-            availableTokens = Math.min(maxTokens, availableTokens + refillAmount);
-            lastRefillEpochMillis = nowEpochMillis;
+        RateLimitStatus getStatus() {
+            refill();
+            int used = maxTokens - (int) Math.floor(currentTokens);
+            if (used < 0) {
+                used = 0;
+            }
+            long resetEpochSeconds = (System.currentTimeMillis() + (long) ((maxTokens - currentTokens) / refillRatePerMs)) / 1000L;
+            return new RateLimitStatus(used, maxTokens, resetEpochSeconds);
+        }
+
+        private void refill() {
+            long now = System.currentTimeMillis();
+            long elapsed = now - lastRefillMs;
+            if (elapsed > 0) {
+                currentTokens = Math.min(maxTokens, currentTokens + (elapsed * refillRatePerMs));
+                lastRefillMs = now;
+            }
         }
     }
 
-    public record RateLimitResult(
-            boolean allowed,
-            int remainingRequests,
-            long retryAfterSeconds,
-            String message
-    ) { }
+    public static class RateLimitResult {
+        public final boolean allowed;
+        public final int remainingRequests;
+        public final long retryAfterSeconds;
+        public final String message;
 
-    public record RateLimitStatus(
-            int used,
-            int limit,
-            long resetEpochSeconds
-    ) { }
+        public RateLimitResult(boolean allowed, int remainingRequests, long retryAfterSeconds, String message) {
+            this.allowed = allowed;
+            this.remainingRequests = remainingRequests;
+            this.retryAfterSeconds = retryAfterSeconds;
+            this.message = message;
+        }
+
+        @Override
+        public String toString() {
+            return "RateLimitResult{allowed=" + allowed + ", remainingRequests=" + remainingRequests
+                    + ", retryAfterSeconds=" + retryAfterSeconds + ", message='" + message + "'}";
+        }
+    }
+
+    public static class RateLimitStatus {
+        public final int used;
+        public final int limit;
+        public final long resetEpochSeconds;
+
+        public RateLimitStatus(int used, int limit, long resetEpochSeconds) {
+            this.used = used;
+            this.limit = limit;
+            this.resetEpochSeconds = resetEpochSeconds;
+        }
+
+        @Override
+        public String toString() {
+            return "RateLimitStatus{used=" + used + ", limit=" + limit + ", resetEpochSeconds=" + resetEpochSeconds + "}";
+        }
+    }
 }

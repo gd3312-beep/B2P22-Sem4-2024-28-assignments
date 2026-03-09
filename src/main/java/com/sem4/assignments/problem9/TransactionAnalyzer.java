@@ -12,147 +12,196 @@ import java.util.Map;
 import java.util.Set;
 
 public class TransactionAnalyzer {
-    public List<TransactionPair> findTwoSum(List<Transaction> transactions, long targetAmount) {
-        Map<Long, List<Transaction>> amountToTransactions = new HashMap<>();
+    public List<TransactionPair> findTwoSum(List<Transaction> transactions, long target) {
+        Map<Long, List<Transaction>> seen = new HashMap<>();
         List<TransactionPair> pairs = new ArrayList<>();
 
-        for (Transaction transaction : transactions) {
-            long complement = targetAmount - transaction.amount();
-            List<Transaction> matches = amountToTransactions.getOrDefault(complement, Collections.emptyList());
-            for (Transaction match : matches) {
-                pairs.add(new TransactionPair(match.id(), transaction.id()));
+        for (Transaction tx : transactions) {
+            long need = target - tx.amount;
+            List<Transaction> match = seen.getOrDefault(need, Collections.emptyList());
+            for (Transaction old : match) {
+                pairs.add(new TransactionPair(old.id, tx.id));
             }
-
-            amountToTransactions.computeIfAbsent(transaction.amount(), key -> new ArrayList<>()).add(transaction);
+            seen.putIfAbsent(tx.amount, new ArrayList<>());
+            seen.get(tx.amount).add(tx);
         }
 
         return pairs;
     }
 
-    public List<TransactionPair> findTwoSumWithinWindow(
-            List<Transaction> transactions,
-            long targetAmount,
-            Duration window
-    ) {
+    public List<TransactionPair> findTwoSumWithinWindow(List<Transaction> transactions, long target, Duration window) {
         List<Transaction> sorted = new ArrayList<>(transactions);
-        sorted.sort((a, b) -> a.timestamp().compareTo(b.timestamp()));
+        sorted.sort((a, b) -> a.timestamp.compareTo(b.timestamp));
 
-        ArrayDeque<Transaction> slidingWindow = new ArrayDeque<>();
-        Map<Long, List<Transaction>> activeAmounts = new HashMap<>();
+        ArrayDeque<Transaction> queue = new ArrayDeque<>();
+        Map<Long, List<Transaction>> active = new HashMap<>();
         List<TransactionPair> pairs = new ArrayList<>();
 
         for (Transaction current : sorted) {
-            while (!slidingWindow.isEmpty()) {
-                Transaction oldest = slidingWindow.peekFirst();
-                if (Duration.between(oldest.timestamp(), current.timestamp()).compareTo(window) <= 0) {
+            while (!queue.isEmpty()) {
+                Transaction first = queue.peekFirst();
+                Duration diff = Duration.between(first.timestamp, current.timestamp);
+                if (diff.compareTo(window) <= 0) {
                     break;
                 }
 
-                slidingWindow.pollFirst();
-                List<Transaction> bucket = activeAmounts.get(oldest.amount());
+                queue.pollFirst();
+                List<Transaction> bucket = active.get(first.amount);
                 if (bucket != null) {
-                    bucket.remove(oldest);
+                    bucket.remove(first);
                     if (bucket.isEmpty()) {
-                        activeAmounts.remove(oldest.amount());
+                        active.remove(first.amount);
                     }
                 }
             }
 
-            long complement = targetAmount - current.amount();
-            for (Transaction match : activeAmounts.getOrDefault(complement, Collections.emptyList())) {
-                pairs.add(new TransactionPair(match.id(), current.id()));
+            long need = target - current.amount;
+            for (Transaction old : active.getOrDefault(need, Collections.emptyList())) {
+                pairs.add(new TransactionPair(old.id, current.id));
             }
 
-            slidingWindow.addLast(current);
-            activeAmounts.computeIfAbsent(current.amount(), key -> new ArrayList<>()).add(current);
+            queue.addLast(current);
+            active.putIfAbsent(current.amount, new ArrayList<>());
+            active.get(current.amount).add(current);
         }
 
         return pairs;
     }
 
-    public List<KSumMatch> findKSum(List<Transaction> transactions, int k, long targetAmount) {
-        if (k < 2 || transactions.isEmpty()) {
+    public List<KSumMatch> findKSum(List<Transaction> transactions, int k, long target) {
+        if (k < 2) {
             return List.of();
         }
 
-        List<Transaction> sorted = new ArrayList<>(transactions);
-        sorted.sort((a, b) -> Long.compare(a.amount(), b.amount()));
+        List<Transaction> list = new ArrayList<>(transactions);
+        list.sort((a, b) -> Long.compare(a.amount, b.amount));
 
-        List<KSumMatch> results = new ArrayList<>();
-        backtrack(sorted, 0, k, targetAmount, new ArrayList<>(), results);
-        return results;
+        List<KSumMatch> result = new ArrayList<>();
+        dfs(list, 0, k, target, new ArrayList<>(), result);
+        return result;
     }
 
     public List<DuplicateAlert> detectDuplicates(List<Transaction> transactions) {
-        Map<String, List<Transaction>> grouped = new HashMap<>();
+        Map<String, List<Transaction>> map = new HashMap<>();
 
-        for (Transaction transaction : transactions) {
-            String key = transaction.amount() + "|" + transaction.merchant().toLowerCase();
-            grouped.computeIfAbsent(key, ignored -> new ArrayList<>()).add(transaction);
+        for (Transaction tx : transactions) {
+            String key = tx.amount + "|" + tx.merchant.toLowerCase();
+            map.putIfAbsent(key, new ArrayList<>());
+            map.get(key).add(tx);
         }
 
         List<DuplicateAlert> alerts = new ArrayList<>();
-        for (List<Transaction> group : grouped.values()) {
+        for (List<Transaction> group : map.values()) {
             if (group.size() < 2) {
                 continue;
             }
 
-            Set<String> accountIds = new HashSet<>();
-            List<Long> transactionIds = new ArrayList<>();
-            for (Transaction transaction : group) {
-                accountIds.add(transaction.accountId());
-                transactionIds.add(transaction.id());
+            Set<String> accounts = new HashSet<>();
+            List<Long> ids = new ArrayList<>();
+            for (Transaction tx : group) {
+                accounts.add(tx.accountId);
+                ids.add(tx.id);
             }
 
-            if (accountIds.size() > 1) {
-                alerts.add(new DuplicateAlert(
-                        group.getFirst().amount(),
-                        group.getFirst().merchant(),
-                        accountIds,
-                        transactionIds));
+            if (accounts.size() > 1) {
+                Transaction sample = group.get(0);
+                alerts.add(new DuplicateAlert(sample.amount, sample.merchant, accounts, ids));
             }
         }
 
         return alerts;
     }
 
-    private void backtrack(
-            List<Transaction> transactions,
-            int start,
-            int k,
-            long target,
-            List<Transaction> chosen,
-            List<KSumMatch> results
-    ) {
-        if (k == 0 && target == 0) {
-            List<Long> ids = chosen.stream().map(Transaction::id).toList();
-            results.add(new KSumMatch(ids, chosen.stream().mapToLong(Transaction::amount).sum()));
+    private void dfs(List<Transaction> list, int index, int k, long target,
+                     List<Transaction> picked, List<KSumMatch> ans) {
+        if (k == 0) {
+            if (target == 0) {
+                List<Long> ids = new ArrayList<>();
+                long sum = 0;
+                for (Transaction tx : picked) {
+                    ids.add(tx.id);
+                    sum += tx.amount;
+                }
+                ans.add(new KSumMatch(ids, sum));
+            }
             return;
         }
 
-        if (k == 0 || start >= transactions.size()) {
+        if (index >= list.size()) {
             return;
         }
 
-        for (int i = start; i < transactions.size(); i++) {
-            Transaction current = transactions.get(i);
-            chosen.add(current);
-            backtrack(transactions, i + 1, k - 1, target - current.amount(), chosen, results);
-            chosen.remove(chosen.size() - 1);
+        for (int i = index; i < list.size(); i++) {
+            Transaction tx = list.get(i);
+            picked.add(tx);
+            dfs(list, i + 1, k - 1, target - tx.amount, picked, ans);
+            picked.remove(picked.size() - 1);
         }
     }
 
-    public record Transaction(
-            long id,
-            long amount,
-            String merchant,
-            String accountId,
-            Instant timestamp
-    ) { }
+    public static class Transaction {
+        public final long id;
+        public final long amount;
+        public final String merchant;
+        public final String accountId;
+        public final Instant timestamp;
 
-    public record TransactionPair(long firstTransactionId, long secondTransactionId) { }
+        public Transaction(long id, long amount, String merchant, String accountId, Instant timestamp) {
+            this.id = id;
+            this.amount = amount;
+            this.merchant = merchant;
+            this.accountId = accountId;
+            this.timestamp = timestamp;
+        }
+    }
 
-    public record KSumMatch(List<Long> transactionIds, long totalAmount) { }
+    public static class TransactionPair {
+        public final long firstId;
+        public final long secondId;
 
-    public record DuplicateAlert(long amount, String merchant, Set<String> accountIds, List<Long> transactionIds) { }
+        public TransactionPair(long firstId, long secondId) {
+            this.firstId = firstId;
+            this.secondId = secondId;
+        }
+
+        @Override
+        public String toString() {
+            return "TransactionPair{firstId=" + firstId + ", secondId=" + secondId + "}";
+        }
+    }
+
+    public static class KSumMatch {
+        public final List<Long> transactionIds;
+        public final long totalAmount;
+
+        public KSumMatch(List<Long> transactionIds, long totalAmount) {
+            this.transactionIds = transactionIds;
+            this.totalAmount = totalAmount;
+        }
+
+        @Override
+        public String toString() {
+            return "KSumMatch{transactionIds=" + transactionIds + ", totalAmount=" + totalAmount + "}";
+        }
+    }
+
+    public static class DuplicateAlert {
+        public final long amount;
+        public final String merchant;
+        public final Set<String> accountIds;
+        public final List<Long> transactionIds;
+
+        public DuplicateAlert(long amount, String merchant, Set<String> accountIds, List<Long> transactionIds) {
+            this.amount = amount;
+            this.merchant = merchant;
+            this.accountIds = accountIds;
+            this.transactionIds = transactionIds;
+        }
+
+        @Override
+        public String toString() {
+            return "DuplicateAlert{amount=" + amount + ", merchant='" + merchant + "', accountIds=" + accountIds
+                    + ", transactionIds=" + transactionIds + "}";
+        }
+    }
 }

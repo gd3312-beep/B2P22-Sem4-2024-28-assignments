@@ -2,112 +2,128 @@ package com.sem4.assignments.problem4;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 public class PlagiarismDetector {
-    private final int nGramSize;
-    private final ConcurrentMap<String, Set<String>> ngramToDocumentIds = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Set<String>> documentToNgrams = new ConcurrentHashMap<>();
+    private final int n;
+    private final Map<String, Set<String>> ngramToDocs = new HashMap<>();
+    private final Map<String, Set<String>> documentNgrams = new HashMap<>();
 
-    public PlagiarismDetector(int nGramSize) {
-        if (nGramSize < 2) {
-            throw new IllegalArgumentException("nGramSize must be at least 2");
+    public PlagiarismDetector(int n) {
+        if (n < 2) {
+            n = 2;
         }
-        this.nGramSize = nGramSize;
+        this.n = n;
     }
 
-    public void indexDocument(String documentId, String content) {
-        String normalizedDocumentId = normalizeDocumentId(documentId);
-        Set<String> ngrams = extractNgrams(content);
-        documentToNgrams.put(normalizedDocumentId, ngrams);
+    public synchronized void indexDocument(String docId, String text) {
+        Set<String> ngrams = extractNgrams(text);
+        documentNgrams.put(docId, ngrams);
 
-        for (String ngram : ngrams) {
-            ngramToDocumentIds.computeIfAbsent(ngram, key -> ConcurrentHashMap.newKeySet()).add(normalizedDocumentId);
+        for (String gram : ngrams) {
+            ngramToDocs.putIfAbsent(gram, new HashSet<>());
+            ngramToDocs.get(gram).add(docId);
         }
     }
 
-    public AnalysisReport analyzeDocument(String submittedDocumentId, String content) {
-        String normalizedDocumentId = normalizeDocumentId(submittedDocumentId);
-        Set<String> extractedNgrams = extractNgrams(content);
-        Map<String, Integer> matchCounts = new HashMap<>();
+    public synchronized AnalysisReport analyzeDocument(String docId, String text) {
+        Set<String> ngrams = extractNgrams(text);
+        Map<String, Integer> matchCount = new HashMap<>();
 
-        for (String ngram : extractedNgrams) {
-            Set<String> candidateDocuments = ngramToDocumentIds.getOrDefault(ngram, Collections.emptySet());
-            for (String candidateDocument : candidateDocuments) {
-                if (!candidateDocument.equals(normalizedDocumentId)) {
-                    matchCounts.merge(candidateDocument, 1, Integer::sum);
+        for (String gram : ngrams) {
+            Set<String> docs = ngramToDocs.getOrDefault(gram, Collections.emptySet());
+            for (String otherDoc : docs) {
+                if (!otherDoc.equals(docId)) {
+                    matchCount.put(otherDoc, matchCount.getOrDefault(otherDoc, 0) + 1);
                 }
             }
         }
 
         List<SimilarityResult> results = new ArrayList<>();
-        for (Map.Entry<String, Integer> entry : matchCounts.entrySet()) {
-            String candidateDocument = entry.getKey();
-            int matches = entry.getValue();
-            int candidateNgramCount = documentToNgrams.getOrDefault(candidateDocument, Collections.emptySet()).size();
-            double similarity = computeSimilarityPercent(matches, extractedNgrams.size(), candidateNgramCount);
+        for (Map.Entry<String, Integer> pair : matchCount.entrySet()) {
+            String otherDoc = pair.getKey();
+            int matches = pair.getValue();
+            int otherSize = documentNgrams.getOrDefault(otherDoc, Collections.emptySet()).size();
+            int base = Math.max(Math.max(ngrams.size(), otherSize), 1);
+            double similarity = (matches * 100.0) / base;
             boolean suspicious = similarity >= 15.0;
-            boolean plagiarismDetected = similarity >= 60.0;
-            results.add(new SimilarityResult(candidateDocument, matches, similarity, suspicious, plagiarismDetected));
+            boolean plagiarism = similarity >= 60.0;
+            results.add(new SimilarityResult(otherDoc, matches, similarity, suspicious, plagiarism));
         }
 
-        results.sort(Comparator
-                .comparingDouble(SimilarityResult::similarityPercent)
-                .thenComparingInt(SimilarityResult::matchingNgrams)
-                .reversed());
-
-        return new AnalysisReport(extractedNgrams.size(), results);
+        results.sort((a, b) -> Double.compare(b.similarityPercent, a.similarityPercent));
+        return new AnalysisReport(ngrams.size(), results);
     }
 
-    private double computeSimilarityPercent(int matches, int countA, int countB) {
-        int denominator = Math.max(Math.max(countA, countB), 1);
-        return (matches * 100.0) / denominator;
-    }
-
-    private Set<String> extractNgrams(String content) {
-        String normalized = content == null ? "" : content.toLowerCase().replaceAll("[^a-z0-9\\s]", " ").trim();
-        if (normalized.isBlank()) {
+    private Set<String> extractNgrams(String text) {
+        if (text == null || text.isBlank()) {
             return Collections.emptySet();
         }
 
-        String[] words = normalized.split("\\s+");
-        if (words.length < nGramSize) {
+        String cleaned = text.toLowerCase().replaceAll("[^a-z0-9\\s]", " ").trim();
+        if (cleaned.isBlank()) {
             return Collections.emptySet();
         }
 
-        Set<String> ngrams = new HashSet<>();
-        for (int i = 0; i <= words.length - nGramSize; i++) {
-            StringBuilder builder = new StringBuilder();
-            for (int j = 0; j < nGramSize; j++) {
+        String[] words = cleaned.split("\\s+");
+        if (words.length < n) {
+            return Collections.emptySet();
+        }
+
+        Set<String> grams = new HashSet<>();
+        for (int i = 0; i <= words.length - n; i++) {
+            StringBuilder sb = new StringBuilder();
+            for (int j = 0; j < n; j++) {
                 if (j > 0) {
-                    builder.append(' ');
+                    sb.append(' ');
                 }
-                builder.append(words[i + j]);
+                sb.append(words[i + j]);
             }
-            ngrams.add(builder.toString());
+            grams.add(sb.toString());
+        }
+        return grams;
+    }
+
+    public static class AnalysisReport {
+        public final int extractedNgrams;
+        public final List<SimilarityResult> matches;
+
+        public AnalysisReport(int extractedNgrams, List<SimilarityResult> matches) {
+            this.extractedNgrams = extractedNgrams;
+            this.matches = matches;
         }
 
-        return ngrams;
+        @Override
+        public String toString() {
+            return "AnalysisReport{extractedNgrams=" + extractedNgrams + ", matches=" + matches + "}";
+        }
     }
 
-    private String normalizeDocumentId(String documentId) {
-        return documentId == null ? "" : documentId.trim();
+    public static class SimilarityResult {
+        public final String documentId;
+        public final int matchingNgrams;
+        public final double similarityPercent;
+        public final boolean suspicious;
+        public final boolean plagiarismDetected;
+
+        public SimilarityResult(String documentId, int matchingNgrams, double similarityPercent,
+                                boolean suspicious, boolean plagiarismDetected) {
+            this.documentId = documentId;
+            this.matchingNgrams = matchingNgrams;
+            this.similarityPercent = similarityPercent;
+            this.suspicious = suspicious;
+            this.plagiarismDetected = plagiarismDetected;
+        }
+
+        @Override
+        public String toString() {
+            return "SimilarityResult{documentId='" + documentId + "', matchingNgrams=" + matchingNgrams
+                    + ", similarityPercent=" + similarityPercent + ", suspicious=" + suspicious
+                    + ", plagiarismDetected=" + plagiarismDetected + "}";
+        }
     }
-
-    public record AnalysisReport(int extractedNgrams, List<SimilarityResult> matches) { }
-
-    public record SimilarityResult(
-            String documentId,
-            int matchingNgrams,
-            double similarityPercent,
-            boolean suspicious,
-            boolean plagiarismDetected
-    ) { }
 }
