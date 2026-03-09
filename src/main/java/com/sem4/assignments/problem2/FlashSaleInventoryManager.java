@@ -1,83 +1,96 @@
 package com.sem4.assignments.problem2;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Map;
+import java.util.Queue;
 
 public class FlashSaleInventoryManager {
-    private final ConcurrentMap<String, ProductInventory> inventoryByProduct = new ConcurrentHashMap<>();
+    private final Map<String, Integer> stockMap = new HashMap<>();
+    private final Map<String, Queue<Long>> waitingListMap = new HashMap<>();
 
-    public void addProduct(String productId, int initialStock) {
-        inventoryByProduct.compute(productId, (id, inventory) -> {
-            if (inventory == null) {
-                return new ProductInventory(Math.max(initialStock, 0));
-            }
-            inventory.stock.addAndGet(Math.max(initialStock, 0));
-            return inventory;
-        });
+    public synchronized void addProduct(String productId, int initialStock) {
+        if (initialStock < 0) {
+            initialStock = 0;
+        }
+        stockMap.put(productId, stockMap.getOrDefault(productId, 0) + initialStock);
+        waitingListMap.putIfAbsent(productId, new LinkedList<>());
     }
 
-    public int checkStock(String productId) {
-        ProductInventory inventory = inventoryByProduct.get(productId);
-        return inventory == null ? 0 : Math.max(inventory.stock.get(), 0);
+    public synchronized int checkStock(String productId) {
+        return stockMap.getOrDefault(productId, 0);
     }
 
-    public PurchaseResult purchaseItem(String productId, long userId) {
-        ProductInventory inventory = inventoryByProduct.get(productId);
-        if (inventory == null) {
-            return new PurchaseResult(PurchaseStatus.PRODUCT_NOT_FOUND, 0, -1, "Product not found");
+    public synchronized PurchaseResult purchaseItem(String productId, long userId) {
+        if (!stockMap.containsKey(productId)) {
+            return new PurchaseResult(false, 0, -1, "Product not found");
         }
 
-        while (true) {
-            int currentStock = inventory.stock.get();
-            if (currentStock <= 0) {
-                inventory.waitingList.add(userId);
-                int position = inventory.waitingList.size();
-                return new PurchaseResult(PurchaseStatus.WAITLISTED, 0, position,
-                        "Stock unavailable. Added to waiting list at position " + position);
-            }
-
-            if (inventory.stock.compareAndSet(currentStock, currentStock - 1)) {
-                return new PurchaseResult(PurchaseStatus.SUCCESS, currentStock - 1, -1,
-                        "Purchase successful");
-            }
+        int currentStock = stockMap.get(productId);
+        if (currentStock > 0) {
+            stockMap.put(productId, currentStock - 1);
+            return new PurchaseResult(true, currentStock - 1, -1, "Purchase successful");
         }
+
+        Queue<Long> queue = waitingListMap.get(productId);
+        queue.add(userId);
+        int position = queue.size();
+        return new PurchaseResult(false, 0, position, "Stock over. Added to waiting list");
     }
 
-    public int restock(String productId, int quantity) {
+    public synchronized int restock(String productId, int quantity) {
         if (quantity <= 0) {
             return checkStock(productId);
         }
-
-        ProductInventory inventory = inventoryByProduct.computeIfAbsent(productId, key -> new ProductInventory(0));
-        return inventory.stock.addAndGet(quantity);
+        int newStock = stockMap.getOrDefault(productId, 0) + quantity;
+        stockMap.put(productId, newStock);
+        waitingListMap.putIfAbsent(productId, new LinkedList<>());
+        return newStock;
     }
 
-    public List<Long> getWaitingListSnapshot(String productId) {
-        ProductInventory inventory = inventoryByProduct.get(productId);
-        if (inventory == null) {
+    public synchronized List<Long> getWaitingListSnapshot(String productId) {
+        Queue<Long> queue = waitingListMap.get(productId);
+        if (queue == null) {
             return List.of();
         }
-        return new ArrayList<>(inventory.waitingList);
+        return new ArrayList<>(queue);
     }
 
-    private static final class ProductInventory {
-        private final AtomicInteger stock;
-        private final ConcurrentLinkedQueue<Long> waitingList = new ConcurrentLinkedQueue<>();
+    public static class PurchaseResult {
+        private final boolean success;
+        private final int remainingStock;
+        private final int waitingListPosition;
+        private final String message;
 
-        private ProductInventory(int stock) {
-            this.stock = new AtomicInteger(stock);
+        public PurchaseResult(boolean success, int remainingStock, int waitingListPosition, String message) {
+            this.success = success;
+            this.remainingStock = remainingStock;
+            this.waitingListPosition = waitingListPosition;
+            this.message = message;
+        }
+
+        public boolean isSuccess() {
+            return success;
+        }
+
+        public int getRemainingStock() {
+            return remainingStock;
+        }
+
+        public int getWaitingListPosition() {
+            return waitingListPosition;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        @Override
+        public String toString() {
+            return "PurchaseResult{success=" + success + ", remainingStock=" + remainingStock
+                    + ", waitingListPosition=" + waitingListPosition + ", message='" + message + "'}";
         }
     }
-
-    public enum PurchaseStatus {
-        SUCCESS,
-        WAITLISTED,
-        PRODUCT_NOT_FOUND
-    }
-
-    public record PurchaseResult(PurchaseStatus status, int remainingStock, int waitingListPosition, String message) { }
 }

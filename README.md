@@ -1,21 +1,23 @@
 # B2P22-Sem4-2024-28-assignments
 
-This project contains Java implementations for all 10 hash-table-based assignment problems.
+Week 1 assignment solutions for Hash Table fundamentals.
 
-## Project Structure
+All 10 problems are implemented in Java.
+
+## Folder Structure
 
 - `problem1` Username availability checker
 - `problem2` Flash sale inventory manager
-- `problem3` DNS cache with TTL + LRU
-- `problem4` Plagiarism detector with n-grams
+- `problem3` DNS cache with TTL
+- `problem4` Plagiarism detector using n-grams
 - `problem5` Real-time analytics dashboard
-- `problem6` Distributed token-bucket rate limiter
-- `problem7` Autocomplete system with typo tolerance
-- `problem8` Parking lot management using open addressing
-- `problem9` Two-Sum variants for transaction analysis
-- `problem10` Multi-level cache system (L1/L2/L3)
+- `problem6` Distributed rate limiter
+- `problem7` Autocomplete system
+- `problem8` Parking lot management (open addressing)
+- `problem9` Two-sum variants for transactions
+- `problem10` Multi-level cache system
 
-## Run
+## Build
 
 ```bash
 cd B2P22-Sem4-2024-28-assignments

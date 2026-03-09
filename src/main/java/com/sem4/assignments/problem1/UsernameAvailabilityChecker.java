@@ -1,79 +1,114 @@
 package com.sem4.assignments.problem1;
 
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 public class UsernameAvailabilityChecker {
-    private final ConcurrentMap<String, Long> usernameToUserId = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, AtomicInteger> attemptFrequency = new ConcurrentHashMap<>();
+    private final Map<String, Long> usernameToUserId = new HashMap<>();
+    private final Map<String, Integer> attemptCountMap = new HashMap<>();
 
-    public boolean registerUsername(String username, long userId) {
-        String normalized = normalize(username);
-        return usernameToUserId.putIfAbsent(normalized, userId) == null;
+    public synchronized boolean registerUsername(String username, long userId) {
+        String name = clean(username);
+        if (name.isEmpty()) {
+            return false;
+        }
+        if (usernameToUserId.containsKey(name)) {
+            return false;
+        }
+        usernameToUserId.put(name, userId);
+        return true;
     }
 
-    public boolean checkAvailability(String username) {
-        String normalized = normalize(username);
-        attemptFrequency.computeIfAbsent(normalized, key -> new AtomicInteger()).incrementAndGet();
-        return !usernameToUserId.containsKey(normalized);
+    public synchronized boolean checkAvailability(String username) {
+        String name = clean(username);
+        attemptCountMap.put(name, attemptCountMap.getOrDefault(name, 0) + 1);
+        return !usernameToUserId.containsKey(name);
     }
 
-    public List<String> suggestAlternatives(String username, int count) {
-        String normalized = normalize(username);
-        List<String> suggestions = new ArrayList<>();
-
-        if (count <= 0) {
-            return suggestions;
+    public synchronized List<String> suggestAlternatives(String username, int count) {
+        List<String> result = new ArrayList<>();
+        String base = clean(username);
+        if (count <= 0 || base.isEmpty()) {
+            return result;
         }
 
-        addIfAvailable(normalized, suggestions, count);
-        addIfAvailable(normalized.replace("_", "."), suggestions, count);
-
-        int suffix = 1;
-        while (suggestions.size() < count && suffix <= count * 20) {
-            addIfAvailable(normalized + suffix, suggestions, count);
-            addIfAvailable(normalized + "_" + suffix, suggestions, count);
-            addIfAvailable(normalized + "." + suffix, suggestions, count);
-            suffix++;
+        if (!usernameToUserId.containsKey(base)) {
+            result.add(base);
         }
 
-        return suggestions;
+        int i = 1;
+        while (result.size() < count && i <= count * 20) {
+            String option1 = base + i;
+            String option2 = base + "_" + i;
+            String option3 = base + "." + i;
+            addIfFree(result, option1, count);
+            addIfFree(result, option2, count);
+            addIfFree(result, option3, count);
+            i++;
+        }
+
+        return result;
     }
 
-    public Optional<AttemptedUsername> getMostAttempted() {
-        return attemptFrequency.entrySet()
-                .stream()
-                .max(Comparator.comparingInt(entry -> entry.getValue().get()))
-                .map(entry -> new AttemptedUsername(entry.getKey(), entry.getValue().get()));
+    public synchronized AttemptedUsername getMostAttempted() {
+        String bestName = null;
+        int bestCount = 0;
+
+        for (Map.Entry<String, Integer> entry : attemptCountMap.entrySet()) {
+            if (entry.getValue() > bestCount) {
+                bestName = entry.getKey();
+                bestCount = entry.getValue();
+            }
+        }
+
+        if (bestName == null) {
+            return null;
+        }
+        return new AttemptedUsername(bestName, bestCount);
     }
 
-    public int getAttemptCount(String username) {
-        String normalized = normalize(username);
-        return attemptFrequency.getOrDefault(normalized, new AtomicInteger(0)).get();
+    public synchronized int getAttemptCount(String username) {
+        return attemptCountMap.getOrDefault(clean(username), 0);
     }
 
-    public Map<String, Long> getRegisteredUsersSnapshot() {
-        return Map.copyOf(usernameToUserId);
-    }
-
-    private void addIfAvailable(String candidate, List<String> suggestions, int count) {
-        if (candidate.isBlank()) {
+    private void addIfFree(List<String> list, String candidate, int limit) {
+        if (list.size() >= limit) {
             return;
         }
-        if (!usernameToUserId.containsKey(candidate) && !suggestions.contains(candidate) && suggestions.size() < count) {
-            suggestions.add(candidate);
+        if (!candidate.isEmpty() && !usernameToUserId.containsKey(candidate) && !list.contains(candidate)) {
+            list.add(candidate);
         }
     }
 
-    private String normalize(String username) {
-        return username == null ? "" : username.trim().toLowerCase();
+    private String clean(String username) {
+        if (username == null) {
+            return "";
+        }
+        return username.trim().toLowerCase();
     }
 
-    public record AttemptedUsername(String username, int attempts) { }
+    public static class AttemptedUsername {
+        private final String username;
+        private final int attempts;
+
+        public AttemptedUsername(String username, int attempts) {
+            this.username = username;
+            this.attempts = attempts;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public int getAttempts() {
+            return attempts;
+        }
+
+        @Override
+        public String toString() {
+            return "AttemptedUsername{username='" + username + "', attempts=" + attempts + "}";
+        }
+    }
 }

@@ -1,146 +1,105 @@
 package com.sem4.assignments.problem10;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.LongAdder;
 
 public class MultiLevelCacheSystem {
-    private static final double L1_LATENCY_MS = 0.5;
-    private static final double L2_LATENCY_MS = 5.0;
-    private static final double L3_LATENCY_MS = 150.0;
+    private final LruMap<String, VideoData> l1;
+    private final LruMap<String, VideoData> l2;
+    private final Map<String, VideoData> l3 = new HashMap<>();
+    private final Map<String, Integer> accessCount = new HashMap<>();
 
-    private final Map<String, VideoData> l1Cache;
-    private final Map<String, VideoData> l2Cache;
-    private final ConcurrentMap<String, VideoData> l3Database = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, AtomicInteger> accessCount = new ConcurrentHashMap<>();
+    private final int promoteThreshold;
 
-    private final int promotionThreshold;
+    private long totalRequests;
+    private long l1Hits;
+    private long l2Hits;
+    private long l3Hits;
+    private long misses;
+    private double totalLatencyMs;
 
-    private final LongAdder l1Hits = new LongAdder();
-    private final LongAdder l2Hits = new LongAdder();
-    private final LongAdder l3Hits = new LongAdder();
-    private final LongAdder misses = new LongAdder();
-    private final LongAdder totalRequests = new LongAdder();
-    private final LongAdder totalLatencyMicros = new LongAdder();
-
-    public MultiLevelCacheSystem(int l1Capacity, int l2Capacity, int promotionThreshold) {
-        this.l1Cache = new LruCache<>(Math.max(1, l1Capacity));
-        this.l2Cache = new LruCache<>(Math.max(1, l2Capacity));
-        this.promotionThreshold = Math.max(1, promotionThreshold);
+    public MultiLevelCacheSystem(int l1Capacity, int l2Capacity, int promoteThreshold) {
+        this.l1 = new LruMap<>(Math.max(1, l1Capacity));
+        this.l2 = new LruMap<>(Math.max(1, l2Capacity));
+        this.promoteThreshold = Math.max(1, promoteThreshold);
     }
 
-    public void putInDatabase(VideoData videoData) {
-        l3Database.put(videoData.videoId(), videoData);
+    public synchronized void putInDatabase(VideoData video) {
+        l3.put(video.videoId, video);
     }
 
-    public CacheLookupResult getVideo(String videoId) {
-        totalRequests.increment();
+    public synchronized CacheLookupResult getVideo(String videoId) {
+        totalRequests++;
 
-        VideoData fromL1;
-        synchronized (l1Cache) {
-            fromL1 = l1Cache.get(videoId);
-        }
-        if (fromL1 != null) {
-            l1Hits.increment();
+        VideoData video = l1.get(videoId);
+        if (video != null) {
+            l1Hits++;
             int count = increaseAccess(videoId);
-            double latency = L1_LATENCY_MS;
-            recordLatency(latency);
-            return new CacheLookupResult(fromL1, CacheLevel.L1, latency, false, count);
+            totalLatencyMs += 0.5;
+            return new CacheLookupResult(video, "L1", 0.5, false, count);
         }
 
-        VideoData fromL2;
-        synchronized (l2Cache) {
-            fromL2 = l2Cache.get(videoId);
-        }
-        if (fromL2 != null) {
-            l2Hits.increment();
+        video = l2.get(videoId);
+        if (video != null) {
+            l2Hits++;
             int count = increaseAccess(videoId);
-            boolean promoted = promoteIfEligible(videoId, fromL2, count);
-            double latency = L2_LATENCY_MS;
-            recordLatency(latency);
-            return new CacheLookupResult(fromL2, CacheLevel.L2, latency, promoted, count);
+            boolean promoted = maybePromote(videoId, video, count);
+            totalLatencyMs += 5.0;
+            return new CacheLookupResult(video, "L2", 5.0, promoted, count);
         }
 
-        VideoData fromL3 = l3Database.get(videoId);
-        if (fromL3 != null) {
-            l3Hits.increment();
-            synchronized (l2Cache) {
-                l2Cache.put(videoId, fromL3);
-            }
+        video = l3.get(videoId);
+        if (video != null) {
+            l3Hits++;
+            l2.put(videoId, video);
             int count = increaseAccess(videoId);
-            boolean promoted = promoteIfEligible(videoId, fromL3, count);
-            double latency = L3_LATENCY_MS;
-            recordLatency(latency);
-            return new CacheLookupResult(fromL3, CacheLevel.L3, latency, promoted, count);
+            boolean promoted = maybePromote(videoId, video, count);
+            totalLatencyMs += 150.0;
+            return new CacheLookupResult(video, "L3", 150.0, promoted, count);
         }
 
-        misses.increment();
-        recordLatency(L3_LATENCY_MS);
-        return new CacheLookupResult(null, CacheLevel.MISS, L3_LATENCY_MS, false, 0);
+        misses++;
+        totalLatencyMs += 150.0;
+        return new CacheLookupResult(null, "MISS", 150.0, false, 0);
     }
 
-    public void invalidateVideo(String videoId) {
-        synchronized (l1Cache) {
-            l1Cache.remove(videoId);
-        }
-        synchronized (l2Cache) {
-            l2Cache.remove(videoId);
-        }
-        l3Database.remove(videoId);
+    public synchronized void invalidateVideo(String videoId) {
+        l1.remove(videoId);
+        l2.remove(videoId);
+        l3.remove(videoId);
         accessCount.remove(videoId);
     }
 
-    public CacheStatistics getStatistics() {
-        long l1 = l1Hits.sum();
-        long l2 = l2Hits.sum();
-        long l3 = l3Hits.sum();
-        long miss = misses.sum();
-        long total = l1 + l2 + l3 + miss;
+    public synchronized CacheStatistics getStatistics() {
+        double l1Rate = totalRequests == 0 ? 0.0 : (l1Hits * 100.0) / totalRequests;
+        double l2Rate = totalRequests == 0 ? 0.0 : (l2Hits * 100.0) / totalRequests;
+        double l3Rate = totalRequests == 0 ? 0.0 : (l3Hits * 100.0) / totalRequests;
+        double overallRate = totalRequests == 0 ? 0.0 : ((l1Hits + l2Hits + l3Hits) * 100.0) / totalRequests;
+        double avgLatency = totalRequests == 0 ? 0.0 : totalLatencyMs / totalRequests;
 
-        double l1Rate = total == 0 ? 0.0 : (l1 * 100.0) / total;
-        double l2Rate = total == 0 ? 0.0 : (l2 * 100.0) / total;
-        double l3Rate = total == 0 ? 0.0 : (l3 * 100.0) / total;
-        double overallHitRate = total == 0 ? 0.0 : ((l1 + l2 + l3) * 100.0) / total;
-        double avgLatency = totalRequests.sum() == 0 ? 0.0 : (totalLatencyMicros.sum() / 1000.0) / totalRequests.sum();
-
-        int l1Size;
-        int l2Size;
-        synchronized (l1Cache) {
-            l1Size = l1Cache.size();
-        }
-        synchronized (l2Cache) {
-            l2Size = l2Cache.size();
-        }
-
-        return new CacheStatistics(l1Rate, l2Rate, l3Rate, overallHitRate, avgLatency, l1Size, l2Size, l3Database.size());
+        return new CacheStatistics(l1Rate, l2Rate, l3Rate, overallRate, avgLatency,
+                l1.size(), l2.size(), l3.size());
     }
 
-    private void recordLatency(double millis) {
-        totalLatencyMicros.add((long) (millis * 1000));
+    private int increaseAccess(String id) {
+        int count = accessCount.getOrDefault(id, 0) + 1;
+        accessCount.put(id, count);
+        return count;
     }
 
-    private int increaseAccess(String videoId) {
-        return accessCount.computeIfAbsent(videoId, key -> new AtomicInteger()).incrementAndGet();
-    }
-
-    private boolean promoteIfEligible(String videoId, VideoData videoData, int count) {
-        if (count < promotionThreshold) {
-            return false;
+    private boolean maybePromote(String id, VideoData video, int count) {
+        if (count >= promoteThreshold) {
+            l1.put(id, video);
+            return true;
         }
-
-        synchronized (l1Cache) {
-            l1Cache.put(videoId, videoData);
-        }
-        return true;
+        return false;
     }
 
-    private static final class LruCache<K, V> extends LinkedHashMap<K, V> {
+    private static class LruMap<K, V> extends LinkedHashMap<K, V> {
         private final int capacity;
 
-        private LruCache(int capacity) {
+        LruMap(int capacity) {
             super(16, 0.75f, true);
             this.capacity = capacity;
         }
@@ -151,31 +110,76 @@ public class MultiLevelCacheSystem {
         }
     }
 
-    public enum CacheLevel {
-        L1,
-        L2,
-        L3,
-        MISS
+    public static class VideoData {
+        public final String videoId;
+        public final String title;
+        public final String payload;
+        public final long updatedAtMillis;
+
+        public VideoData(String videoId, String title, String payload, long updatedAtMillis) {
+            this.videoId = videoId;
+            this.title = title;
+            this.payload = payload;
+            this.updatedAtMillis = updatedAtMillis;
+        }
+
+        @Override
+        public String toString() {
+            return "VideoData{videoId='" + videoId + "', title='" + title + "'}";
+        }
     }
 
-    public record VideoData(String videoId, String title, String payload, long updatedAtEpochMillis) { }
+    public static class CacheLookupResult {
+        public final VideoData video;
+        public final String level;
+        public final double latencyMs;
+        public final boolean promotedToL1;
+        public final int accessCount;
 
-    public record CacheLookupResult(
-            VideoData videoData,
-            CacheLevel level,
-            double latencyMillis,
-            boolean promotedToL1,
-            int accessCount
-    ) { }
+        public CacheLookupResult(VideoData video, String level, double latencyMs, boolean promotedToL1, int accessCount) {
+            this.video = video;
+            this.level = level;
+            this.latencyMs = latencyMs;
+            this.promotedToL1 = promotedToL1;
+            this.accessCount = accessCount;
+        }
 
-    public record CacheStatistics(
-            double l1HitRate,
-            double l2HitRate,
-            double l3HitRate,
-            double overallHitRate,
-            double averageLatencyMillis,
-            int l1Size,
-            int l2Size,
-            int l3Size
-    ) { }
+        @Override
+        public String toString() {
+            return "CacheLookupResult{video=" + video + ", level='" + level + "', latencyMs=" + latencyMs
+                    + ", promotedToL1=" + promotedToL1 + ", accessCount=" + accessCount + "}";
+        }
+    }
+
+    public static class CacheStatistics {
+        public final double l1HitRate;
+        public final double l2HitRate;
+        public final double l3HitRate;
+        public final double overallHitRate;
+        public final double averageLatencyMs;
+        public final int l1Size;
+        public final int l2Size;
+        public final int l3Size;
+
+        public CacheStatistics(double l1HitRate, double l2HitRate, double l3HitRate,
+                               double overallHitRate, double averageLatencyMs,
+                               int l1Size, int l2Size, int l3Size) {
+            this.l1HitRate = l1HitRate;
+            this.l2HitRate = l2HitRate;
+            this.l3HitRate = l3HitRate;
+            this.overallHitRate = overallHitRate;
+            this.averageLatencyMs = averageLatencyMs;
+            this.l1Size = l1Size;
+            this.l2Size = l2Size;
+            this.l3Size = l3Size;
+        }
+
+        @Override
+        public String toString() {
+            return "CacheStatistics{l1HitRate=" + l1HitRate + ", l2HitRate=" + l2HitRate
+                    + ", l3HitRate=" + l3HitRate + ", overallHitRate=" + overallHitRate
+                    + ", averageLatencyMs=" + averageLatencyMs + ", l1Size=" + l1Size
+                    + ", l2Size=" + l2Size + ", l3Size=" + l3Size + "}";
+        }
+    }
 }
