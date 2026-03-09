@@ -1,4 +1,4 @@
-package com.sem4.assignments.problem5;
+package com.sem4.assignments.week1;
 
 import java.time.Instant;
 import java.util.ArrayList;

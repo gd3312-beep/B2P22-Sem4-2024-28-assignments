@@ -1,4 +1,4 @@
-package com.sem4.assignments.problem8;
+package com.sem4.assignments.week1;
 
 public class ParkingLotManager {
     private final int capacity;

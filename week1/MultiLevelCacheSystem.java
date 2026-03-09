@@ -1,4 +1,4 @@
-package com.sem4.assignments.problem10;
+package com.sem4.assignments.week1;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
